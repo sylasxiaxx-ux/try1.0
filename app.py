@@ -2,38 +2,37 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-import os
-import shutil
+from io import BytesIO
 from datetime import datetime
+import openpyxl
 
-# 将你原有的核心逻辑封装成一个函数
-def generate_portrait(folder_path, mapping_file, template_file):
-    # 1. 读取映射表（原 try_3.0.xlsx）
+# ---------- 核心处理函数（接收文件对象，返回输出文件的字节数据）----------
+def generate_portrait(json_files, mapping_file, template_file):
+    # 1. 读取映射表
     df_try = pd.read_excel(mapping_file)
 
-    # 2. 遍历文件夹中的所有 .txt 文件
-    for filename in os.listdir(folder_path):
-        if not filename.endswith('.txt'):
-            continue
-        name = filename.replace('.txt', '').replace('-', '_')
-        file_path = os.path.join(folder_path, filename)
-        raw = pd.read_json(file_path)
+    # 2. 遍历所有上传的 JSON 文件（每个文件是一个 BytesIO 对象）
+    for uploaded_file in json_files:
+        # 获取文件名（不含扩展名）
+        name = uploaded_file.name.replace('.txt', '').replace('-', '_')
+        # 读取 JSON
+        raw = pd.read_json(uploaded_file)
         raw_new = raw.explode('snapshotResponseRegions')
 
         # 展开 tagValueResults
         result_df = pd.DataFrame()
-        for index, row in raw_new.iterrows():
+        for _, row in raw_new.iterrows():
             rows_to_append = row['snapshotResponseRegions']['tagValueResults']
             result_df = pd.concat([result_df, pd.DataFrame(rows_to_append)], ignore_index=True)
 
-        # 提取需要的三列
+        # 提取三列
         result_df_final = pd.DataFrame({
             'tagName': result_df['tagEname'],
             'tagValueName': result_df['tagValueName'],
             'rate': result_df['rate']
         })
 
-        # 替换英文标签名为中文（映射表）
+        # 中文映射
         replace_map = {
             'cosmetics_year_cnt_region': '彩妆年消费频次',
             'skin_year_amt_region': '护肤年消费金额',
@@ -59,18 +58,18 @@ def generate_portrait(folder_path, mapping_file, template_file):
             'daas_tag_mz_seven_crowd': '美妆七大功效人群'
         }
         result_df_final['tagName'] = result_df_final['tagName'].replace(replace_map)
-        # 特殊处理：性别、年龄（可能包含后缀）
+        # 特殊处理性别、年龄（可能带后缀）
         result_df_final.loc[result_df_final['tagName'].str.contains('daas_tag_pred_gender'), 'tagName'] = '性别'
         result_df_final.loc[result_df_final['tagName'].str.contains('daas_tag_pred_age_level'), 'tagName'] = '年龄'
 
-        # 构造 A、B 两列（A = 标签名+数值名，B = rate）
+        # 构造 A、B 列
         df10 = result_df_final[['tagName', 'tagValueName', 'rate']].copy()
-        df10.columns = ['A', 'B', 'C']          # 临时重命名
-        df10['A'] = df10['A'] + df10['B']      # 拼接
+        df10.columns = ['A', 'B', 'C']
+        df10['A'] = df10['A'] + df10['B']
         df10['B'] = df10['C']
         df10.drop('C', axis=1, inplace=True)
 
-        # 计算人群量级（购买力的 count 总和）
+        # 计算人群量级
         ttl_df = result_df[result_df['tagEname'] == 'pref_purchasing_power']
         ttl = ttl_df['count'].sum() if not ttl_df.empty else 0
         ttl_row = pd.DataFrame([['人群量级', ttl]], columns=['A', 'B'])
@@ -80,52 +79,72 @@ def generate_portrait(folder_path, mapping_file, template_file):
 
         # 左连接映射表
         df_try = pd.merge(df_try, result_t_deduplicated, how='left', on='A')
-        df_try[name] = df_try['B']   # 以文件名作为列名
+        df_try[name] = df_try['B']   # 以原始文件名（不带扩展名）作为新列名
 
-    # 3. 生成带时间戳的输出文件，并写入
-    now = datetime.now()
-    output_file = now.strftime("%Y%m%d_%H%M%S") + ".xlsx"
-    shutil.copyfile(template_file, output_file)
-    with pd.ExcelWriter(output_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+    # 3. 生成输出文件（基于模板文件）
+    # 用 openpyxl 加载模板工作簿
+    wb = openpyxl.load_workbook(template_file)
+    # 将 df_try 写入 "1" 工作表（先删除原有，再添加）
+    if "1" in wb.sheetnames:
+        std = wb["1"]
+        wb.remove(std)
+    # 创建一个新的工作表 "1"
+    with pd.ExcelWriter(template_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+        writer.book = wb
         df_try.to_excel(writer, sheet_name="1", index=False)
-    return output_file
+    # 保存到内存 BytesIO
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
 
-
-# ------------------- Streamlit UI -------------------
+# ---------- Streamlit UI ----------
 st.set_page_config(page_title="人群画像生成器", layout="centered")
-st.title("🧑‍🤝‍🧑 人群画像轻量生成器")
+st.title("🧑‍🤝‍🧑 人群画像轻量生成器（上传版）")
 
-st.markdown("请选择以下文件/文件夹路径，点击运行即可生成新的人群画像 Excel 文件。")
+st.markdown("请上传以下文件，点击按钮即可生成新的画像 Excel。")
 
-with st.form("input_form"):
-    folder_path = st.text_input("📁 JSON 文件所在文件夹路径（绝对路径）", 
-                                placeholder="例如：C:/Users/xxx/画像txt")
-    mapping_file = st.text_input("📄 映射表文件路径（try_3.0.xlsx）", 
-                                 placeholder="例如：C:/Users/xxx/try_3.0.xlsx")
-    template_file = st.text_input("📄 模板文件路径（多人群画像_模板_3.0.xlsx）",
-                                  placeholder="例如：C:/Users/xxx/多人群画像_模板_3.0.xlsx")
+with st.form("upload_form"):
+    mapping_file = st.file_uploader(
+        "📄 上传映射表（try_3.0.xlsx）", 
+        type=["xlsx"],
+        help="必须包含 'A' 列，程序会将标签组合名与之匹配。"
+    )
+    template_file = st.file_uploader(
+        "📄 上传模板文件（多人群画像_模板_3.0.xlsx）", 
+        type=["xlsx"],
+        help="此文件必须有一个名为 '1' 的工作表（将被替换）。"
+    )
+    json_files = st.file_uploader(
+        "📁 上传所有 JSON 文件（可多选 .txt）", 
+        type=["txt"],
+        accept_multiple_files=True,
+        help="选择你需要处理的所有 JSON 文本文件，可以按住 Ctrl 多选。"
+    )
     submitted = st.form_submit_button("🚀 开始生成画像")
 
 if submitted:
-    if not all([folder_path, mapping_file, template_file]):
-        st.error("请完整填写所有路径！")
-    elif not os.path.isdir(folder_path):
-        st.error("JSON 文件夹路径不存在，请检查！")
-    elif not os.path.isfile(mapping_file):
-        st.error("映射表文件不存在，请检查！")
-    elif not os.path.isfile(template_file):
-        st.error("模板文件不存在，请检查！")
+    # 检查是否完整上传
+    if mapping_file is None:
+        st.error("请上传映射表文件！")
+    elif template_file is None:
+        st.error("请上传模板文件！")
+    elif len(json_files) == 0:
+        st.error("请至少上传一个 JSON 文件！")
     else:
         with st.spinner("正在处理，请稍候..."):
             try:
-                out_file = generate_portrait(folder_path, mapping_file, template_file)
-                st.success(f"✅ 生成成功！文件名为：{out_file}")
-                with open(out_file, "rb") as f:
-                    st.download_button(
-                        label="📥 点击下载结果 Excel",
-                        data=f,
-                        file_name=out_file,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                output_bytes = generate_portrait(json_files, mapping_file, template_file)
+                # 生成文件名（带时间戳）
+                now = datetime.now()
+                out_filename = now.strftime("%Y%m%d_%H%M%S") + ".xlsx"
+                st.success("✅ 生成成功！点击下方按钮下载结果。")
+                st.download_button(
+                    label="📥 下载画像 Excel",
+                    data=output_bytes,
+                    file_name=out_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             except Exception as e:
                 st.error(f"运行出错：{e}")
+                st.exception(e)  # 显示详细错误，方便调试
