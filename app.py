@@ -6,11 +6,22 @@ from io import BytesIO
 from datetime import datetime
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
+import os
 
 # ---------- 核心处理函数 ----------
-def generate_portrait(json_files, mapping_file, template_file):
-    # 1. 读取映射表，只保留 'A' 列
-    df_try = pd.read_excel(mapping_file)
+def generate_portrait(json_files):
+    # 1. 固定从仓库根目录读取映射表和模板（与 app.py 同级）
+    mapping_path = 'data/try_3.0.xlsx'
+    template_path = 'data/多人群画像_模板_3.0.xlsx'
+    
+    # 检查文件是否存在（方便调试）
+    if not os.path.exists(mapping_path):
+        raise FileNotFoundError(f"映射表文件 '{mapping_path}' 未找到，请确认已上传到仓库根目录")
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"模板文件 '{template_path}' 未找到，请确认已上传到仓库根目录")
+    
+    # 读取映射表，只保留 'A' 列
+    df_try = pd.read_excel(mapping_path)
     if 'A' not in df_try.columns:
         raise ValueError("映射表必须包含 'A' 列")
     df_try = df_try[['A']].copy()
@@ -64,7 +75,7 @@ def generate_portrait(json_files, mapping_file, template_file):
         result_df_final.loc[result_df_final['tagName'].str.contains('daas_tag_pred_gender'), 'tagName'] = '性别'
         result_df_final.loc[result_df_final['tagName'].str.contains('daas_tag_pred_age_level'), 'tagName'] = '年龄'
 
-        # 构造 A、B 列（A = 标签名+数值名，B = rate）
+        # 构造 A、B 列
         df10 = result_df_final[['tagName', 'tagValueName', 'rate']].copy()
         df10.columns = ['A', 'B', 'C']
         df10['A'] = df10['A'] + df10['B']
@@ -79,51 +90,42 @@ def generate_portrait(json_files, mapping_file, template_file):
         result_t = pd.concat([ttl_row, df10], ignore_index=True)
         result_t_deduplicated = result_t.groupby('A', as_index=False).first()
 
-        # 左连接（df_try 不含 'B' 列）
+        # 左连接
         df_try = pd.merge(df_try, result_t_deduplicated, how='left', on='A')
         df_try[name] = df_try['B']
         df_try.drop(columns=['B'], inplace=True)
 
-    # ---------- 3. 生成输出文件（使用 openpyxl 直接操作） ----------
-    # 加载模板工作簿（template_file 是 UploadedFile 对象，可直接传给 load_workbook）
-    wb = openpyxl.load_workbook(template_file)
+    # ---------- 3. 生成输出文件 ----------
+    wb = openpyxl.load_workbook(template_path)
     
-    # 如果存在 "1" 工作表则删除
     if "1" in wb.sheetnames:
         wb.remove(wb["1"])
     
-    # 创建新工作表 "1"
     ws = wb.create_sheet("1")
     
-    # 将 df_try 写入工作表（包含表头）
     for r in dataframe_to_rows(df_try, index=False, header=True):
         ws.append(r)
     
-    # 保存到内存 BytesIO
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     return output
 
+
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="人群画像生成器", layout="centered")
-st.title("🧑‍🤝‍🧑 人群画像轻量生成器（上传版）")
+st.title("🧑‍🤝‍🧑 人群画像轻量生成器")
 
-st.markdown("请上传以下文件，点击按钮即可生成新的画像 Excel。")
+st.markdown("""
+**使用说明：**
+- 映射表（`try_3.0.xlsx`）和模板文件已内置在系统中，无需上传。
+- 请上传需要处理的 JSON 文件（.txt 格式），可多选。
+- 点击按钮后自动生成包含所有标签画像的新 Excel 文件。
+""")
 
 with st.form("upload_form"):
-    mapping_file = st.file_uploader(
-        "📄 上传映射表（try_3.0.xlsx）", 
-        type=["xlsx"],
-        help="必须包含 'A' 列，程序会将标签组合名与之匹配。"
-    )
-    template_file = st.file_uploader(
-        "📄 上传模板文件（多人群画像_模板_3.0.xlsx）", 
-        type=["xlsx"],
-        help="此文件可以包含多个工作表，程序会替换或创建名为 '1' 的工作表。"
-    )
     json_files = st.file_uploader(
-        "📁 上传所有 JSON 文件（可多选 .txt）", 
+        "📁 上传 JSON 文件（可多选 .txt）", 
         type=["txt"],
         accept_multiple_files=True,
         help="选择你需要处理的所有 JSON 文本文件，可以按住 Ctrl 多选。"
@@ -131,16 +133,12 @@ with st.form("upload_form"):
     submitted = st.form_submit_button("🚀 开始生成画像")
 
 if submitted:
-    if mapping_file is None:
-        st.error("请上传映射表文件！")
-    elif template_file is None:
-        st.error("请上传模板文件！")
-    elif len(json_files) == 0:
+    if len(json_files) == 0:
         st.error("请至少上传一个 JSON 文件！")
     else:
         with st.spinner("正在处理，请稍候..."):
             try:
-                output_bytes = generate_portrait(json_files, mapping_file, template_file)
+                output_bytes = generate_portrait(json_files)
                 now = datetime.now()
                 out_filename = now.strftime("%Y%m%d_%H%M%S") + ".xlsx"
                 st.success("✅ 生成成功！点击下方按钮下载结果。")
