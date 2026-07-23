@@ -293,7 +293,7 @@ def load_default_mapping():
         try:
             df = pd.read_excel(default_path)
             # 检查必须列
-            required_cols = ['id', '类目', 'nickname']
+            required_cols = ['ID', '类目', 'nickname']
             if all(col in df.columns for col in required_cols):
                 df = df[required_cols].copy()
                 df['id'] = df['id'].astype(str)
