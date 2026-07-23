@@ -314,9 +314,9 @@ def load_default_mapping():
 with st.expander("📥 输入数据", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        outflow_qty = st.number_input("流失总人数 (outflow_qty)", min_value=1, value=1, step=1000, key="outflow_qty_input")
+        outflow_qty = st.number_input("流失总人数 (outflow_qty)", min_value=0, value=0, step=1000, key="outflow_qty_input")
     with col2:
-        inflow_qty = st.number_input("流入总人数 (inflow_qty)", min_value=1, value=1, step=1000, key="inflow_qty_input")
+        inflow_qty = st.number_input("流入总人数 (inflow_qty)", min_value=0, value=0, step=1000, key="inflow_qty_input")
     
     # JSON文本框高度设为50
     json1 = st.text_area("📄 品牌流失 JSON", height=50, key="json1", placeholder="粘贴品牌流失的JSON数据...")
