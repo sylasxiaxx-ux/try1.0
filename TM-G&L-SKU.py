@@ -36,7 +36,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_axises = pd.DataFrame(df_axises.loc[1,'values'])
     df_axises = df_axises[0]
     
-    # 将流出人数转为数值
     sales_numeric = pd.to_numeric(df_sales, errors='coerce')
     df_pct_outflow = sales_numeric / out_qty
     
@@ -121,7 +120,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
 
     # 品牌净值
     def create_brand_net(inflow_df, outflow_df):
-        # 确保数值列已为数值类型
         inflow_df['流入人数(指数)'] = pd.to_numeric(inflow_df['流入人数(指数)'], errors='coerce')
         outflow_df['流出人数(指数)'] = pd.to_numeric(outflow_df['流出人数(指数)'], errors='coerce')
         
@@ -181,7 +179,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     return df_brand_outflow, df_item_outflow_raw, df_brand_inflow, df_item_inflow_raw, df_brand_net
 
 def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
-    # 复制并确保数值列类型
     item_inflow = item_inflow.copy()
     item_outflow = item_outflow.copy()
     item_inflow['流入人数'] = pd.to_numeric(item_inflow['流入人数'], errors='coerce')
@@ -407,6 +404,18 @@ if st.session_state.computed_tables is not None:
         st.subheader("⚠️ 发现未匹配的ID，请补充类目和nickname")
         st.info(f"共有 {len(unmatched)} 个ID未匹配到nickname。请在下方表格中为每个ID填写对应的「类目」和「nickname」，然后点击“更新映射并重新计算”。")
 
+        # ========== 新增：辅助查看已有 nickname ==========
+        with st.expander("📋 查看当前映射表中已有的 nickname（按类目分组）"):
+            if st.session_state.id_nickname_df is not None:
+                # 提取类目和 nickname，去重后按类目排序
+                ref_df = st.session_state.id_nickname_df[['类目', 'nickname']].drop_duplicates().sort_values(['类目', 'nickname'])
+                st.dataframe(ref_df, use_container_width=True, hide_index=True)
+                st.caption("提示：请参考上表已有的 nickname，保持命名一致性。")
+            else:
+                st.info("当前无映射表数据。")
+        # =================================================
+
+        # 构建编辑表格
         edit_df = unmatched[['ID', '单品', '品牌']].copy()
         edit_df['类目'] = ""
         edit_df['nickname'] = ""
