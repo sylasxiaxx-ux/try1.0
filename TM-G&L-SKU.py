@@ -4,28 +4,25 @@ import numpy as np
 import json
 from io import BytesIO
 import openpyxl
+import os
 
 # ---------- 页面配置 ----------
-st.set_page_config(page_title="流入流出净值分析（含nickname匹配）", layout="wide")
-st.title("📊 品牌/单品流入流出净值分析（含单品昵称匹配）")
+st.set_page_config(page_title="流入流出净值分析-SKU）", layout="wide")
+st.title("📊 品牌/单品流入流出净值分析")
 
 # ---------- 初始化 session_state ----------
 if "id_nickname_df" not in st.session_state:
     st.session_state.id_nickname_df = None          # 存储当前使用的映射表
-if "need_rematch" not in st.session_state:
-    st.session_state.need_rematch = False           # 是否需要重新计算
-if "json_inputs" not in st.session_state:
-    st.session_state.json_inputs = {}               # 存储四个json字符串
-if "outflow_qty" not in st.session_state:
-    st.session_state.outflow_qty = 0
-if "inflow_qty" not in st.session_state:
-    st.session_state.inflow_qty = 0
+if "temp_nickname_edit" not in st.session_state:
+    st.session_state.temp_nickname_edit = None      # 编辑中的新映射（暂存）
 if "computed_tables" not in st.session_state:
     st.session_state.computed_tables = None         # 缓存计算结果
 if "unmatched_df" not in st.session_state:
     st.session_state.unmatched_df = None            # 当前未匹配的ID清单
-if "temp_nickname_edit" not in st.session_state:
-    st.session_state.temp_nickname_edit = None      # 编辑中的nickname映射
+if "raw_dfs" not in st.session_state:
+    st.session_state.raw_dfs = None                 # 存储原始未合并的流入流出df
+if "mapping_source" not in st.session_state:
+    st.session_state.mapping_source = None          # 映射表来源（'default' 或 'uploaded'）
 
 # ---------- 核心处理函数 ----------
 def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qty):
@@ -69,7 +66,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
             df_pct2.append(float(i) / out_qty) 
         except ValueError: 
             df_pct2.append(None)
-    # 构建原始单品流出df
     df_item_outflow_raw = pd.DataFrame({
         '单品': [item['key'] for item in itemname], 
         '品牌': [brand['key'] for brand in itembrand], 
@@ -77,9 +73,7 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
         '人数占比': df_pct2,
         'ID': item_id
     })
-    # 过滤掉单品名为'-'的行
     df_item_outflow_raw = df_item_outflow_raw[df_item_outflow_raw['单品'] != '-']
-    # 去重（保留第一个）
     df_item_outflow_raw = df_item_outflow_raw.drop_duplicates(subset=['ID', '单品', '品牌'], keep='first')
     df_item_outflow_raw.index = pd.RangeIndex(start=1, stop=len(df_item_outflow_raw)+1)
 
@@ -129,13 +123,11 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
         '人数占比': df_pct4,
         'ID': item_id4
     })
-    # 过滤掉单品名为'-'的行
     df_item_inflow_raw = df_item_inflow_raw[df_item_inflow_raw['单品'] != '-']
-    # 去重
     df_item_inflow_raw = df_item_inflow_raw.drop_duplicates(subset=['ID', '单品', '品牌'], keep='first')
     df_item_inflow_raw.index = pd.RangeIndex(start=1, stop=len(df_item_inflow_raw)+1)
 
-    # ---- 品牌净值 ----
+    # 品牌净值
     def create_brand_net(inflow_df, outflow_df):
         min_inflow = min([float(x) for x in inflow_df['流入人数(指数)'] if pd.notna(x)])
         min_outflow = min([float(x) for x in outflow_df['流出人数(指数)'] if pd.notna(x)])
@@ -177,7 +169,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
                 '_net_value': (inflow_value - outflow_value) if (pd.notna(inflow_value) and pd.notna(outflow_value)) else np.nan
             })
         net_df = pd.DataFrame(net_data)
-        # 排序：先有净值的按净值降序，再只有流入的按流入降序，再只有流出的按流出降序
         net_brands = net_df[net_df['_net_value'].notna()].copy()
         net_brands = net_brands.sort_values(by=['_net_value', '_inflow_value'], ascending=[False, False])
         inflow_only = net_df[(net_df['_inflow_value'].notna()) & (net_df['_outflow_value'] == min_outflow - 1)].copy()
@@ -191,10 +182,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
 
     df_brand_net = create_brand_net(df_brand_inflow, df_brand_outflow)
 
-    # ---- 单品净值（需要nickname） ----
-    # 注意：此部分在原始代码中是分步计算的，这里我们把nickname匹配放在外部，此处只返回原始单品df和品牌df，不进行nickname合并。
-    # 我们将单品df返回，然后在主程序中用映射表合并nickname再计算净值。
-    # 因此这里返回：df_brand_outflow, df_item_outflow_raw, df_brand_inflow, df_item_inflow_raw, df_brand_net
     return df_brand_outflow, df_item_outflow_raw, df_brand_inflow, df_item_inflow_raw, df_brand_net
 
 def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
@@ -208,45 +195,42 @@ def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
     item_inflow['ID'] = item_inflow['ID'].astype(str)
     item_outflow['ID'] = item_outflow['ID'].astype(str)
     id_nickname_df = id_nickname_df.copy()
-    id_nickname_df['ID'] = id_nickname_df['ID'].astype(str)
+    id_nickname_df['id'] = id_nickname_df['id'].astype(str)  # 注意列名为 'id'
 
-    # 合并nickname
-    inflow_merged = item_inflow.merge(id_nickname_df, on='ID', how='left')
-    outflow_merged = item_outflow.merge(id_nickname_df, on='ID', how='left')
+    # 合并nickname（只取nickname列，忽略类目）
+    nickname_map = id_nickname_df[['id', 'nickname']].rename(columns={'id':'ID'})
+    inflow_merged = item_inflow.merge(nickname_map, on='ID', how='left')
+    outflow_merged = item_outflow.merge(nickname_map, on='ID', how='left')
     # 调整列顺序
     inflow_merged = inflow_merged[['单品', '品牌', 'nickname', '流入人数', '人数占比', 'ID']]
     outflow_merged = outflow_merged[['单品', '品牌', 'nickname', '流出人数', '人数占比', 'ID']]
-    # 重新索引
     inflow_merged.index = pd.RangeIndex(start=1, stop=len(inflow_merged)+1)
     outflow_merged.index = pd.RangeIndex(start=1, stop=len(outflow_merged)+1)
 
     # 找出未匹配的（nickname为NaN或'-'）
     unmatched_inflow = inflow_merged[inflow_merged['nickname'].isna() | (inflow_merged['nickname'] == '-')]
     unmatched_outflow = outflow_merged[outflow_merged['nickname'].isna() | (outflow_merged['nickname'] == '-')]
-    # 合并未匹配的ID（去重）
     unmatched_ids = pd.concat([
         unmatched_inflow[['ID', '单品', '品牌']],
         unmatched_outflow[['ID', '单品', '品牌']]
     ]).drop_duplicates(subset=['ID', '单品', '品牌'])
+    # 标注数据来源
     unmatched_ids['数据来源'] = unmatched_ids.apply(
-        lambda r: '流入' if r['ID'].isin(unmatched_inflow['ID']) and r['ID'].isin(unmatched_outflow['ID']) 
-                  else ('流入' if r['ID'].isin(unmatched_inflow['ID']) else '流出'),
+        lambda r: '流入' if r['ID'].isin(unmatched_inflow['ID']) and not r['ID'].isin(unmatched_outflow['ID'])
+                  else ('流出' if r['ID'].isin(unmatched_outflow['ID']) and not r['ID'].isin(unmatched_inflow['ID'])
+                        else '流入&流出'),
         axis=1
     )
     unmatched_ids = unmatched_ids[['ID', '单品', '品牌', '数据来源']]
     unmatched_ids.index = pd.RangeIndex(start=1, stop=len(unmatched_ids)+1)
 
     # 计算单品净值（按nickname汇总）
-    # 过滤掉nickname为NaN或'-'的（这部分单独处理）
     inflow_clean = inflow_merged[~inflow_merged['nickname'].isna() & (inflow_merged['nickname'] != '-')]
     outflow_clean = outflow_merged[~outflow_merged['nickname'].isna() & (outflow_merged['nickname'] != '-')]
-
-    # 按nickname汇总
     inflow_sum = inflow_clean.groupby('nickname', as_index=False)['流入人数'].sum().rename(columns={'流入人数':'总流入人数'})
     outflow_sum = outflow_clean.groupby('nickname', as_index=False)['流出人数'].sum().rename(columns={'流出人数':'总流出人数'})
     merged = pd.merge(inflow_sum, outflow_sum, on='nickname', how='outer').fillna(np.nan)
 
-    # 计算显示值
     min_inflow = merged['总流入人数'].min() if not merged['总流入人数'].isna().all() else 0
     min_outflow = merged['总流出人数'].min() if not merged['总流出人数'].isna().all() else 0
     net_rows = []
@@ -288,7 +272,6 @@ def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
         })
     net_df = pd.DataFrame(net_rows)
     if len(net_df) > 0:
-        # 排序
         net_brands = net_df[net_df['_net_val'].notna()].copy()
         net_brands = net_brands.sort_values(by=['_net_val', '_inflow_val'], ascending=[False, False])
         inflow_only = net_df[(net_df['_inflow_val'].notna()) & (net_df['_outflow_val'] == min_outflow - 1)].copy()
@@ -303,6 +286,30 @@ def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
 
     return inflow_merged, outflow_merged, net_final, unmatched_ids
 
+# ---------- 加载默认映射表（如果未上传） ----------
+def load_default_mapping():
+    default_path = "data/id匹配_0723updated.xlsx"
+    if os.path.exists(default_path):
+        try:
+            df = pd.read_excel(default_path)
+            # 检查必须列
+            required_cols = ['id', '类目', 'nickname']
+            if all(col in df.columns for col in required_cols):
+                df = df[required_cols].copy()
+                df['id'] = df['id'].astype(str)
+                st.session_state.id_nickname_df = df
+                st.session_state.mapping_source = 'default'
+                return True
+            else:
+                st.warning(f"默认映射表列名不正确，需要: {', '.join(required_cols)}")
+                return False
+        except Exception as e:
+            st.warning(f"读取默认映射表失败: {e}")
+            return False
+    else:
+        st.info("未找到默认映射表 data/id匹配_0723updated.xlsx，请上传映射表。")
+        return False
+
 # ---------- 主界面布局 ----------
 with st.expander("📥 输入数据", expanded=True):
     col1, col2 = st.columns(2)
@@ -311,35 +318,47 @@ with st.expander("📥 输入数据", expanded=True):
     with col2:
         inflow_qty = st.number_input("流入总人数 (inflow_qty)", min_value=1, value=1, step=1000, key="inflow_qty_input")
     
+    # JSON文本框高度设为50
     json1 = st.text_area("📄 品牌流失 JSON", height=50, key="json1", placeholder="粘贴品牌流失的JSON数据...")
     json2 = st.text_area("📄 单品流失 JSON", height=50, key="json2", placeholder="粘贴单品流失的JSON数据...")
     json3 = st.text_area("📄 品牌流入 JSON", height=50, key="json3", placeholder="粘贴品牌流入的JSON数据...")
     json4 = st.text_area("📄 单品流入 JSON", height=50, key="json4", placeholder="粘贴单品流入的JSON数据...")
 
-    uploaded_file = st.file_uploader("📎 上传 id-nickname 映射表 (Excel)", type=["xlsx"], key="mapping_upload")
+    st.markdown("**📎 上传 id-nickname 映射表 (Excel)**")
+    st.caption("若不上传，将尝试从 data/id匹配_0723updated.xlsx 读取默认映射表。")
+    uploaded_file = st.file_uploader("必须包含 'id', '类目', 'nickname' 三列", type=["xlsx"], key="mapping_upload")
 
+    # 处理上传或默认加载
     if uploaded_file is not None:
-        # 读取映射表
         try:
             new_mapping = pd.read_excel(uploaded_file)
-            # 自动检测列名，假设第一列为ID，第二列为nickname，或用户自定义
-            # 我们要求列名必须包含 'ID' 和 'nickname'，否则提示
-            if 'ID' not in new_mapping.columns or 'nickname' not in new_mapping.columns:
-                st.error("映射表必须包含 'ID' 和 'nickname' 两列！")
+            required_cols = ['id', '类目', 'nickname']
+            if not all(col in new_mapping.columns for col in required_cols):
+                st.error(f"映射表必须包含列: {', '.join(required_cols)}")
             else:
-                # 保存到session_state
-                st.session_state.id_nickname_df = new_mapping[['ID', 'nickname']].copy()
-                st.session_state.id_nickname_df['ID'] = st.session_state.id_nickname_df['ID'].astype(str)
-                st.success(f"映射表加载成功，共 {len(st.session_state.id_nickname_df)} 条记录。")
+                new_mapping = new_mapping[required_cols].copy()
+                new_mapping['id'] = new_mapping['id'].astype(str)
+                st.session_state.id_nickname_df = new_mapping
+                st.session_state.mapping_source = 'uploaded'
+                st.success(f"映射表上传成功，共 {len(new_mapping)} 条记录。")
         except Exception as e:
             st.error(f"读取映射表失败: {e}")
+    else:
+        # 如果还没有加载任何映射表，尝试加载默认
+        if st.session_state.id_nickname_df is None:
+            if load_default_mapping():
+                st.success(f"已加载默认映射表 (data/id匹配_0723updated.xlsx)，共 {len(st.session_state.id_nickname_df)} 条记录。")
+            # 否则显示提示（已在 load_default_mapping 中显示）
 
-    # 按钮：运行分析
+    # 显示当前映射表来源
+    if st.session_state.id_nickname_df is not None:
+        source = "上传" if st.session_state.mapping_source == 'uploaded' else "默认(data/id匹配_0723updated.xlsx)"
+        st.info(f"✅ 当前映射表来源: {source}，共 {len(st.session_state.id_nickname_df)} 条记录。")
+
     run_btn = st.button("🚀 运行分析", type="primary")
 
 # ---------- 执行计算 ----------
 if run_btn:
-    # 检查必填项
     errors = []
     if not json1.strip():
         errors.append("品牌流失 JSON 不能为空")
@@ -354,7 +373,7 @@ if run_btn:
     if inflow_qty <= 0:
         errors.append("流入总人数必须大于0")
     if st.session_state.id_nickname_df is None:
-        errors.append("请先上传 id-nickname 映射表")
+        errors.append("请先上传映射表或确保 data/id匹配_0723updated.xlsx 存在")
 
     if errors:
         for err in errors:
@@ -370,12 +389,17 @@ if run_btn:
                 df_item_in_raw, df_item_out_raw, st.session_state.id_nickname_df
             )
 
-            # 保存结果到session_state，以便后续展示和更新
+            # 保存原始df（用于后续更新映射时重新计算）
+            st.session_state.raw_dfs = {
+                'item_in_raw': df_item_in_raw,
+                'item_out_raw': df_item_out_raw
+            }
+
             st.session_state.computed_tables = {
                 'df_brand_out': df_brand_out,
-                'df_item_out': outflow_merged,          # 带nickname的流出
+                'df_item_out': outflow_merged,
                 'df_brand_in': df_brand_in,
-                'df_item_in': inflow_merged,            # 带nickname的流入
+                'df_item_in': inflow_merged,
                 'df_brand_net': df_brand_net,
                 'df_item_net': df_item_net,
                 'unmatched': unmatched,
@@ -383,7 +407,6 @@ if run_btn:
                 'inflow_qty': inflow_qty
             }
             st.session_state.unmatched_df = unmatched
-            st.session_state.need_rematch = False
             st.success("计算完成！请查看下方结果。")
 
         except json.JSONDecodeError as e:
@@ -399,102 +422,74 @@ if st.session_state.computed_tables is not None:
 
     # 如果有未匹配的，显示编辑区域
     if len(unmatched) > 0:
-        st.subheader("⚠️ 发现未匹配的ID，请补充nickname")
-        st.info(f"共有 {len(unmatched)} 个ID未匹配到nickname。请在下方表格中为每个ID填写对应的昵称（nickname），然后点击“更新映射并重新计算”。")
+        st.subheader("⚠️ 发现未匹配的ID，请补充类目和nickname")
+        st.info(f"共有 {len(unmatched)} 个ID未匹配到nickname。请在下方表格中为每个ID填写对应的「类目」和「nickname」，然后点击“更新映射并重新计算”。")
 
-        # 显示未匹配的表格，并添加可编辑的nickname列
-        # 我们用一个data_editor让用户编辑
-        # 先取出ID和当前nickname（可能为NaN）
-        # 构建编辑用的DataFrame
+        # 构建编辑表格
         edit_df = unmatched[['ID', '单品', '品牌']].copy()
-        # 添加一列nickname（初始为空字符串）
+        # 初始化为空
+        edit_df['类目'] = ""
         edit_df['nickname'] = ""
-        # 如果之前已经编辑过一部分，则恢复
-        if st.session_state.temp_nickname_edit is not None:
-            # 合并已有的编辑结果
-            edit_df = edit_df.merge(st.session_state.temp_nickname_edit[['ID', 'nickname']], on='ID', how='left', suffixes=('', '_new'))
-            edit_df['nickname'] = edit_df['nickname_new'].fillna(edit_df['nickname'])
-            edit_df.drop(columns=['nickname_new'], inplace=True)
 
-        # 显示可编辑表格
+        # 如果之前有暂存编辑，则恢复
+        if st.session_state.temp_nickname_edit is not None:
+            temp = st.session_state.temp_nickname_edit
+            edit_df = edit_df.merge(temp[['ID', '类目', 'nickname']], on='ID', how='left', suffixes=('', '_new'))
+            edit_df['类目'] = edit_df['类目_new'].fillna(edit_df['类目'])
+            edit_df['nickname'] = edit_df['nickname_new'].fillna(edit_df['nickname'])
+            edit_df.drop(columns=['类目_new', 'nickname_new'], inplace=True)
+
         edited = st.data_editor(
             edit_df,
             column_config={
                 "ID": st.column_config.TextColumn("ID", disabled=True),
                 "单品": st.column_config.TextColumn("单品", disabled=True),
                 "品牌": st.column_config.TextColumn("品牌", disabled=True),
-                "nickname": st.column_config.TextColumn("nickname（请输入昵称）", required=True),
+                "类目": st.column_config.TextColumn("类目 (必填)", required=True),
+                "nickname": st.column_config.TextColumn("nickname (必填)", required=True),
             },
             hide_index=True,
             use_container_width=True,
             key="edit_unmatched"
         )
 
-        # 按钮：更新映射并重新计算
         if st.button("🔄 更新映射并重新计算"):
-            # 检查是否所有行都填了nickname
-            if edited['nickname'].isna().any() or (edited['nickname'] == '').any():
-                st.warning("请为所有ID填写nickname后再更新！")
+            # 检查是否所有行都填了类目和nickname
+            if edited['类目'].isna().any() or (edited['类目'] == '').any() or edited['nickname'].isna().any() or (edited['nickname'] == '').any():
+                st.warning("请为所有ID填写完整的「类目」和「nickname」后再更新！")
             else:
-                # 提取新的映射关系
-                new_mappings = edited[['ID', 'nickname']].copy()
-                new_mappings = new_mappings.drop_duplicates(subset=['ID'])
-                # 合并到现有的映射表中
-                current_mapping = st.session_state.id_nickname_df.copy()
-                # 移除已有的相同ID（用新映射覆盖）
-                current_mapping = current_mapping[~current_mapping['ID'].isin(new_mappings['ID'])]
-                updated_mapping = pd.concat([current_mapping, new_mappings], ignore_index=True)
-                # 保存
-                st.session_state.id_nickname_df = updated_mapping
-                st.session_state.temp_nickname_edit = new_mappings  # 记录本次编辑，便于恢复
-                # 重新计算
-                try:
-                    # 重新解析（使用之前存储的json和人数）
-                    # 注意：我们需要重新读取json，但我们可以从session中获取上次的json
-                    # 这里简化：再次调用计算函数，但需从原输入获取。
-                    # 直接使用session中存储的原始数据？未存储。我们重新从界面获取。
-                    # 但为了便于，我们重新调用解析函数，使用当前界面的json值
-                    # 为了可靠，我们从st.session_state中获取上次的json（如果有存储）
-                    # 我们在运行按钮时，已经把json存入session_state了吗？没有，我们存了计算结果，但没有存json原始值。
-                    # 为了方便，我们利用st.session_state中保存的表格，但需要原始json？不，我们只需重新合并映射即可。
-                    # 因为我们已经有了原始的流入流出df（未合并），所以我们可以直接重新合并。
-                    # 但我们的parse函数返回的是未合并的df。我们可以将未合并的df保存在session中。
-                    # 稍作修改：在第一次计算时，也保存原始df。
-                    # 但为了简单，我们重新执行解析，因为json在界面中依然存在。
-                    # 那就用界面中的json值。
-                    df_brand_out, df_item_out_raw, df_brand_in, df_item_in_raw, df_brand_net = parse_json_to_dfs(
-                        st.session_state.json1, st.session_state.json2, st.session_state.json3, st.session_state.json4,
-                        st.session_state.outflow_qty, st.session_state.inflow_qty
-                    )
-                    # 但json未保存，我们需在运行按钮时保存它们。我们加上。
-                    # 但此处我们直接用界面值，可能不够，但可以。
-                    # 我们重新调用，但为了确保，我们可以在运行按钮时把json存入session。
-                except Exception as e:
-                    st.error(f"重新计算失败: {e}")
-                    st.stop()
-                # 实际上，更好的方式：我们直接使用已有的原始df（未合并）进行重新合并，不需要重新解析。
-                # 所以我们修改方案：在第一次计算时保存原始df（未加nickname的）。
-                # 我们来修改：在第一次计算时，将原始df存入session。
-                # 为了代码清晰，我们在运行按钮中保存原始df。
-                # 这里我们重新运行一次，但用存储的原始df。
-                if "raw_dfs" in st.session_state:
+                # 提取新映射
+                new_mappings = edited[['ID', '类目', 'nickname']].copy()
+                new_mappings['ID'] = new_mappings['ID'].astype(str)
+                # 合并到现有映射表（若ID已存在则覆盖）
+                current = st.session_state.id_nickname_df.copy()
+                current['id'] = current['id'].astype(str)
+                # 删除已存在的ID（用新数据覆盖）
+                current = current[~current['id'].isin(new_mappings['ID'])]
+                # 追加新数据
+                updated = pd.concat([current, new_mappings.rename(columns={'ID':'id'})], ignore_index=True)
+                # 按 类目, nickname 排序
+                updated = updated.sort_values(by=['类目', 'nickname']).reset_index(drop=True)
+                st.session_state.id_nickname_df = updated
+                st.session_state.temp_nickname_edit = new_mappings  # 暂存本次编辑
+                # 修改来源为 'uploaded'（因为现在映射是用户编辑的）
+                st.session_state.mapping_source = 'uploaded'
+
+                # 重新计算（使用保存的原始df）
+                if st.session_state.raw_dfs is not None:
                     raw = st.session_state.raw_dfs
                     inflow_merged, outflow_merged, df_item_net, unmatched_new = compute_item_net_with_nickname(
-                        raw['item_in_raw'], raw['item_out_raw'], st.session_state.id_nickname_df
+                        raw['item_in_raw'], raw['item_out_raw'], updated
                     )
-                    # 更新表格
                     st.session_state.computed_tables['df_item_out'] = outflow_merged
                     st.session_state.computed_tables['df_item_in'] = inflow_merged
                     st.session_state.computed_tables['df_item_net'] = df_item_net
                     st.session_state.computed_tables['unmatched'] = unmatched_new
                     st.session_state.unmatched_df = unmatched_new
-                    st.session_state.temp_nickname_edit = new_mappings
-                    st.success("映射已更新并重新计算完成！")
-                    # 强制刷新页面
+                    st.success("映射已更新并重新计算完成！请查看下方结果。")
                     st.rerun()
                 else:
                     st.error("原始数据丢失，请重新运行分析。")
-                    # 我们可以重新运行，但为了安全，提示用户重新点击"运行分析"。
 
     # 展示所有表格
     st.subheader("📊 品牌流失 TOP20")
@@ -515,10 +510,33 @@ if st.session_state.computed_tables is not None:
     st.subheader("⚖️ 单品净值（按nickname汇总）")
     st.dataframe(tables['df_item_net'].style.hide(axis="index"))
 
+    # 如果所有已匹配，显示成功信息
     if len(unmatched) == 0:
         st.success("✅ 所有单品均已匹配到nickname！")
 
-# 补充：在运行按钮中保存原始df和json等，方便后续更新。
-# 我们在运行按钮的代码块中，除了保存computed_tables，还保存raw_dfs和输入参数。
-# 修改上面的运行按钮部分。
-# 由于代码已长，我们直接在之前运行按钮中增加保存。
+    # ---------- 下载最新的映射表 ----------
+    if st.session_state.id_nickname_df is not None:
+        st.markdown("---")
+        st.subheader("📥 下载最新映射表")
+        st.info("点击下方按钮可下载当前使用的完整映射表（包含所有已补充的 nickname），以便下次直接上传。")
+        
+        # 准备导出数据（包含三列）
+        export_df = st.session_state.id_nickname_df.copy()
+        # 确保列顺序为 id, 类目, nickname
+        if 'id' not in export_df.columns:
+            # 如果列名是 'ID'，则重命名
+            export_df = export_df.rename(columns={'ID':'id'})
+        export_df = export_df[['id', '类目', 'nickname']]
+        # 按 类目, nickname 排序
+        export_df = export_df.sort_values(by=['类目', 'nickname']).reset_index(drop=True)
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            export_df.to_excel(writer, index=False, sheet_name='映射表')
+        output.seek(0)
+        st.download_button(
+            label="📥 下载映射表 (Excel)",
+            data=output,
+            file_name="id_mapping_updated.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
