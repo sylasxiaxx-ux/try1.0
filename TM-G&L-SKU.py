@@ -7,7 +7,7 @@ import openpyxl
 import os
 
 # ---------- 页面配置 ----------
-st.set_page_config(page_title="流入流出净值分析（含单品昵称匹配）", layout="wide")
+st.set_page_config(page_title="品牌/单品流入流出净值分析", layout="wide")
 st.title("📊 品牌/单品流入流出净值分析（含单品昵称匹配）")
 
 # ---------- 初始化 session_state ----------
@@ -26,6 +26,7 @@ if "mapping_source" not in st.session_state:
 
 # ---------- 核心处理函数 ----------
 def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qty):
+    # 品牌流失
     data1 = json.loads(json_str1)
     df1 = pd.DataFrame(data1)
     df_sales = pd.DataFrame(df1.loc['datas','body']) 
@@ -34,21 +35,21 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_axises = pd.DataFrame(df1.loc['datas','body'])
     df_axises = pd.DataFrame(df_axises.loc[1,'values'])
     df_axises = df_axises[0]
-    df_pct_outflow = []
-    for i in df_sales: 
-        try: 
-            df_pct_outflow.append(float(i) / out_qty) 
-        except ValueError: 
-            df_pct_outflow.append(None)
+    
+    # 将流出人数转为数值
+    sales_numeric = pd.to_numeric(df_sales, errors='coerce')
+    df_pct_outflow = sales_numeric / out_qty
+    
     index1 = pd.RangeIndex(start=1, stop=len(df_axises) + 1) 
     df_brand_outflow = pd.DataFrame({
         '品牌名': df_axises,
-        '流出人数(指数)': df_sales,
+        '流出人数(指数)': sales_numeric,
         '人数占比': df_pct_outflow
     })
     df_brand_outflow = df_brand_outflow.sort_values(by='人数占比', ascending=False)
     df_brand_outflow.index = index1
 
+    # 单品流失
     data2 = json.loads(json_str2)
     df2 = pd.DataFrame(data2)
     df_sales2 = pd.DataFrame(df2.loc['datas','body']) 
@@ -57,16 +58,14 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_axise2 = pd.DataFrame(df2.loc['axises','body'])
     itemname = df_axise2.loc[1,'values']
     itembrand = df_axise2.loc[2,'values']
-    df_pct2 = []
-    for i in df_sale2: 
-        try: 
-            df_pct2.append(float(i) / out_qty) 
-        except ValueError: 
-            df_pct2.append(None)
+    
+    sales_numeric2 = pd.to_numeric(df_sale2, errors='coerce')
+    df_pct2 = sales_numeric2 / out_qty
+    
     df_item_outflow_raw = pd.DataFrame({
         '单品': [item['key'] for item in itemname], 
         '品牌': [brand['key'] for brand in itembrand], 
-        '流出人数': df_sale2,
+        '流出人数': sales_numeric2,
         '人数占比': df_pct2,
         'ID': item_id
     })
@@ -74,6 +73,7 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_item_outflow_raw = df_item_outflow_raw.drop_duplicates(subset=['ID', '单品', '品牌'], keep='first')
     df_item_outflow_raw.index = pd.RangeIndex(start=1, stop=len(df_item_outflow_raw)+1)
 
+    # 品牌流入
     data3 = json.loads(json_str3)
     df3 = pd.DataFrame(data3)
     df_sales3 = pd.DataFrame(df3.loc['datas','body']) 
@@ -82,21 +82,20 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_axises3 = pd.DataFrame(df3.loc['datas','body'])
     df_axises3 = pd.DataFrame(df_axises3.loc[1,'values'])
     df_axises3 = df_axises3[0]
-    df_pct_inflow = []
-    for i in df_sales3: 
-        try: 
-            df_pct_inflow.append(float(i) / in_qty) 
-        except ValueError: 
-            df_pct_inflow.append(None)
+    
+    sales_numeric3 = pd.to_numeric(df_sales3, errors='coerce')
+    df_pct_inflow = sales_numeric3 / in_qty
+    
     index3 = pd.RangeIndex(start=1, stop=len(df_axises3) + 1) 
     df_brand_inflow = pd.DataFrame({
         '品牌名': df_axises3,
-        '流入人数(指数)': df_sales3,
+        '流入人数(指数)': sales_numeric3,
         '人数占比': df_pct_inflow
     })
     df_brand_inflow = df_brand_inflow.sort_values(by='人数占比', ascending=False)
     df_brand_inflow.index = index3
 
+    # 单品流入
     data4 = json.loads(json_str4)
     df4 = pd.DataFrame(data4)
     df_sales4 = pd.DataFrame(df4.loc['datas','body']) 
@@ -105,16 +104,14 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_axise4 = pd.DataFrame(df4.loc['axises','body'])
     itemname4 = df_axise4.loc[1,'values']
     itembrand4 = df_axise4.loc[2,'values']
-    df_pct4 = []
-    for i in df_sale4: 
-        try: 
-            df_pct4.append(float(i) / in_qty) 
-        except ValueError: 
-            df_pct4.append(None)
+    
+    sales_numeric4 = pd.to_numeric(df_sale4, errors='coerce')
+    df_pct4 = sales_numeric4 / in_qty
+    
     df_item_inflow_raw = pd.DataFrame({
         '单品': [item['key'] for item in itemname4], 
         '品牌': [brand['key'] for brand in itembrand4], 
-        '流入人数': df_sale4,
+        '流入人数': sales_numeric4,
         '人数占比': df_pct4,
         'ID': item_id4
     })
@@ -122,16 +119,22 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_item_inflow_raw = df_item_inflow_raw.drop_duplicates(subset=['ID', '单品', '品牌'], keep='first')
     df_item_inflow_raw.index = pd.RangeIndex(start=1, stop=len(df_item_inflow_raw)+1)
 
+    # 品牌净值
     def create_brand_net(inflow_df, outflow_df):
-        min_inflow = min([float(x) for x in inflow_df['流入人数(指数)'] if pd.notna(x)])
-        min_outflow = min([float(x) for x in outflow_df['流出人数(指数)'] if pd.notna(x)])
+        # 确保数值列已为数值类型
+        inflow_df['流入人数(指数)'] = pd.to_numeric(inflow_df['流入人数(指数)'], errors='coerce')
+        outflow_df['流出人数(指数)'] = pd.to_numeric(outflow_df['流出人数(指数)'], errors='coerce')
+        
+        min_inflow = inflow_df['流入人数(指数)'].min()
+        min_outflow = outflow_df['流出人数(指数)'].min()
         all_brands = set(inflow_df['品牌名']).union(set(outflow_df['品牌名']))
         net_data = []
         for brand in all_brands:
             inflow_row = inflow_df[inflow_df['品牌名'] == brand]
-            inflow_value = float(inflow_row['流入人数(指数)'].iloc[0]) if not inflow_row.empty else np.nan
+            inflow_value = inflow_row['流入人数(指数)'].iloc[0] if not inflow_row.empty else np.nan
             outflow_row = outflow_df[outflow_df['品牌名'] == brand]
-            outflow_value = float(outflow_row['流出人数(指数)'].iloc[0]) if not outflow_row.empty else np.nan
+            outflow_value = outflow_row['流出人数(指数)'].iloc[0] if not outflow_row.empty else np.nan
+            
             if pd.notna(inflow_value) and pd.notna(outflow_value):
                 display_inflow = int(round(inflow_value))
                 display_outflow = int(round(outflow_value))
@@ -178,8 +181,12 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     return df_brand_outflow, df_item_outflow_raw, df_brand_inflow, df_item_inflow_raw, df_brand_net
 
 def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
+    # 复制并确保数值列类型
     item_inflow = item_inflow.copy()
     item_outflow = item_outflow.copy()
+    item_inflow['流入人数'] = pd.to_numeric(item_inflow['流入人数'], errors='coerce')
+    item_outflow['流出人数'] = pd.to_numeric(item_outflow['流出人数'], errors='coerce')
+    
     item_inflow['ID'] = item_inflow['ID'].astype(str)
     item_outflow['ID'] = item_outflow['ID'].astype(str)
     id_nickname_df = id_nickname_df.copy()
@@ -209,6 +216,7 @@ def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
     unmatched_ids = unmatched_ids[['ID', '单品', '品牌', '数据来源']]
     unmatched_ids.index = pd.RangeIndex(start=1, stop=len(unmatched_ids)+1)
 
+    # 计算单品净值（按nickname汇总）
     inflow_clean = inflow_merged[~inflow_merged['nickname'].isna() & (inflow_merged['nickname'] != '-')]
     outflow_clean = outflow_merged[~outflow_merged['nickname'].isna() & (outflow_merged['nickname'] != '-')]
     inflow_sum = inflow_clean.groupby('nickname', as_index=False)['流入人数'].sum().rename(columns={'流入人数':'总流入人数'})
