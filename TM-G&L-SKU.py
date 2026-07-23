@@ -26,7 +26,6 @@ if "mapping_source" not in st.session_state:
 
 # ---------- 核心处理函数 ----------
 def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qty):
-    # 品牌流失
     data1 = json.loads(json_str1)
     df1 = pd.DataFrame(data1)
     df_sales = pd.DataFrame(df1.loc['datas','body']) 
@@ -48,7 +47,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_brand_outflow = df_brand_outflow.sort_values(by='人数占比', ascending=False)
     df_brand_outflow.index = index1
 
-    # 单品流失
     data2 = json.loads(json_str2)
     df2 = pd.DataFrame(data2)
     df_sales2 = pd.DataFrame(df2.loc['datas','body']) 
@@ -72,7 +70,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_item_outflow_raw = df_item_outflow_raw.drop_duplicates(subset=['ID', '单品', '品牌'], keep='first')
     df_item_outflow_raw.index = pd.RangeIndex(start=1, stop=len(df_item_outflow_raw)+1)
 
-    # 品牌流入
     data3 = json.loads(json_str3)
     df3 = pd.DataFrame(data3)
     df_sales3 = pd.DataFrame(df3.loc['datas','body']) 
@@ -94,7 +91,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_brand_inflow = df_brand_inflow.sort_values(by='人数占比', ascending=False)
     df_brand_inflow.index = index3
 
-    # 单品流入
     data4 = json.loads(json_str4)
     df4 = pd.DataFrame(data4)
     df_sales4 = pd.DataFrame(df4.loc['datas','body']) 
@@ -118,7 +114,6 @@ def parse_json_to_dfs(json_str1, json_str2, json_str3, json_str4, out_qty, in_qt
     df_item_inflow_raw = df_item_inflow_raw.drop_duplicates(subset=['ID', '单品', '品牌'], keep='first')
     df_item_inflow_raw.index = pd.RangeIndex(start=1, stop=len(df_item_inflow_raw)+1)
 
-    # 品牌净值
     def create_brand_net(inflow_df, outflow_df):
         inflow_df['流入人数(指数)'] = pd.to_numeric(inflow_df['流入人数(指数)'], errors='coerce')
         outflow_df['流出人数(指数)'] = pd.to_numeric(outflow_df['流出人数(指数)'], errors='coerce')
@@ -213,7 +208,6 @@ def compute_item_net_with_nickname(item_inflow, item_outflow, id_nickname_df):
     unmatched_ids = unmatched_ids[['ID', '单品', '品牌', '数据来源']]
     unmatched_ids.index = pd.RangeIndex(start=1, stop=len(unmatched_ids)+1)
 
-    # 计算单品净值（按nickname汇总）
     inflow_clean = inflow_merged[~inflow_merged['nickname'].isna() & (inflow_merged['nickname'] != '-')]
     outflow_clean = outflow_merged[~outflow_merged['nickname'].isna() & (outflow_merged['nickname'] != '-')]
     inflow_sum = inflow_clean.groupby('nickname', as_index=False)['流入人数'].sum().rename(columns={'流入人数':'总流入人数'})
@@ -404,16 +398,37 @@ if st.session_state.computed_tables is not None:
         st.subheader("⚠️ 发现未匹配的ID，请补充类目和nickname")
         st.info(f"共有 {len(unmatched)} 个ID未匹配到nickname。请在下方表格中为每个ID填写对应的「类目」和「nickname」，然后点击“更新映射并重新计算”。")
 
-        # ========== 新增：辅助查看已有 nickname ==========
-        with st.expander("📋 查看当前映射表中已有的 nickname（按类目分组）"):
+        # ========== 辅助查看：按类目筛选 + 关键词搜索 ==========
+        with st.expander("📋 查看当前映射表中已有的 nickname（可按类目筛选 / 关键词搜索）", expanded=True):
             if st.session_state.id_nickname_df is not None:
-                # 提取类目和 nickname，去重后按类目排序
                 ref_df = st.session_state.id_nickname_df[['类目', 'nickname']].drop_duplicates().sort_values(['类目', 'nickname'])
-                st.dataframe(ref_df, use_container_width=True, hide_index=True)
-                st.caption("提示：请参考上表已有的 nickname，保持命名一致性。")
+                
+                # 关键词搜索框（品牌名）
+                keyword = st.text_input("🔍 输入品牌名（或关键词）搜索 nickname", placeholder="例如：雅诗兰黛")
+                
+                # 类目多选
+                all_categories = sorted(ref_df['类目'].unique())
+                selected_categories = st.multiselect(
+                    "选择类目（空选则显示全部）",
+                    options=all_categories,
+                    default=[],
+                    key="category_filter"
+                )
+                
+                # 应用过滤
+                if selected_categories:
+                    filtered_df = ref_df[ref_df['类目'].isin(selected_categories)]
+                else:
+                    filtered_df = ref_df
+                
+                if keyword:
+                    filtered_df = filtered_df[filtered_df['nickname'].str.contains(keyword, case=False, na=False)]
+                
+                st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+                st.caption("💡 提示：可同时使用类目筛选和关键词搜索，结果取交集。")
             else:
                 st.info("当前无映射表数据。")
-        # =================================================
+        # ======================================================
 
         # 构建编辑表格
         edit_df = unmatched[['ID', '单品', '品牌']].copy()
